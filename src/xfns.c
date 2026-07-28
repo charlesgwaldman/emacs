@@ -4012,12 +4012,20 @@ set_up_x_back_buffer (struct frame *f)
 void
 tear_down_x_back_buffer (struct frame *f)
 {
+  /* If the connection was dropped due to I/O error, the server-side
+     resources have been deallocated, but we still need to clean up
+     client-side references.  It would be safe (no-op) to call
+     XRenderFreePicture and XdbeDeallocateBackBufferName except that
+     FRAME_X_DISPLAY (f) has been set to NULL in
+     x_connection_closed.  */
+
 #ifdef HAVE_XRENDER
   block_input ();
   if (FRAME_X_PICTURE (f) != None)
     {
-      XRenderFreePicture (FRAME_X_DISPLAY (f),
-			  FRAME_X_PICTURE (f));
+      if (FRAME_X_DISPLAY (f))
+        XRenderFreePicture (FRAME_X_DISPLAY (f),
+                            FRAME_X_PICTURE (f));
       FRAME_X_PICTURE (f) = None;
     }
   unblock_input ();
@@ -4032,8 +4040,9 @@ tear_down_x_back_buffer (struct frame *f)
 #ifdef USE_CAIRO
 	  x_cr_destroy_frame_context (f);
 #endif
-          XdbeDeallocateBackBufferName (FRAME_X_DISPLAY (f),
-                                        FRAME_X_DRAWABLE (f));
+          if (FRAME_X_DISPLAY (f))
+            XdbeDeallocateBackBufferName (FRAME_X_DISPLAY (f),
+                                          FRAME_X_DRAWABLE (f));
           FRAME_X_RAW_DRAWABLE (f) = FRAME_X_WINDOW (f);
         }
     }

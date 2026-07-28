@@ -1819,10 +1819,12 @@ android_emacs_init (int argc, char **argv, char *dump_file)
 	     "to survive disconnects.\n",
 	     stderr);
 #elif defined USE_GTK
-      fputs ("\nWarning: due to a long standing Gtk+ bug\nhttps://gitlab.gnome.org/GNOME/gtk/issues/221\n\
-Emacs might crash when run in daemon mode and the X11 connection is unexpectedly lost.\n\
-Using an Emacs configured with --with-x-toolkit=lucid does not have this problem.\n",
+#ifndef HAVE_XSETIOERROREXITHANDLER
+      fputs ("\nWarning: Emacs will abort when the X11 connection is unexpectedly lost.\n\
+Using an Emacs configured with --with-x-toolkit=lucid or building with GTK and\n\
+libX11 version >= 1.7 does not have this problem.\n",
 	     stderr);
+#endif
 #endif
 
       if (daemon_type == 2)
