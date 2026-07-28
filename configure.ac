@@ -3505,6 +3505,9 @@ if test "${HAVE_X11}" = "yes"; then
 
   AC_CHECK_FUNCS([XrmSetDatabase XScreenResourceString XScreenNumberOfScreen])
   AC_CHECK_FUNCS([XDisplayCells XDestroySubwindows])
+  # Present in libX11 1.7 and newer, allows overriding exit behavior
+  # of XSetIOErrorHandler
+  AC_CHECK_FUNCS([XSetIOErrorExitHandler])
 fi
 
 if test "${window_system}" = "x11"; then
@@ -3827,11 +3830,8 @@ if test x"$pkg_check_gtk" = xyes; then
     GTK_OBJ="gtkutil.o $GTK_OBJ"
     term_header=$gtk_term_header
     USE_X_TOOLKIT=none
-    AC_MSG_WARN([[Your version of Gtk+ will have problems with
-       closing open displays.  This is no problem if you just use
-       one display, but if you use more than one and close one of them
-       Emacs may crash.
-       See https://gitlab.gnome.org/GNOME/gtk/issues/221]])
+    AC_MSG_WARN([[Older GTK versions have had problems when Emacs
+       closes one of several open displays; see etc/PROBLEMS.]])
   fi
 
 fi

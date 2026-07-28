@@ -80,6 +80,16 @@ left margin is present, Emacs will now display the overlay arrow into
 this margin.  Edebug is now using this feature by explicitly setting up
 a left margin for it.
 
+---
+** Emacs built with GTK can now survive X server disconnects.
+When built against libX11 1.7 or later, a GTK Emacs no longer aborts
+when its connection to an X server is lost (for example, when the SSH
+connection carrying a forwarded display is dropped).  Frames on the
+lost display are deleted and the session continues: a daemon keeps
+serving its remaining clients, and new frames can be created on other
+displays.  Previously, any X disconnect killed the entire process in
+GTK builds.
+
 ** Mode Line
 
 *** Popup menus invoked from mode line select another window.

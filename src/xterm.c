@@ -1163,6 +1163,10 @@ static bool x_alloc_nearest_color_1 (Display *, Colormap, XColor *);
 static void x_raise_frame (struct frame *);
 static void x_lower_frame (struct frame *);
 static int x_io_error_quitter (Display *);
+#if defined USE_GTK && defined HAVE_XSETIOERROREXITHANDLER
+static void x_io_error_exit_handler (Display *, void *);
+#endif
+static void x_connection_closed (Display *, const char *, bool);
 static struct terminal *x_create_terminal (struct x_display_info *);
 static void x_frame_rehighlight (struct x_display_info *);
 
@@ -25693,6 +25697,21 @@ XTread_socket (struct terminal *terminal, struct input_event *hold_quit)
       x_io_error_quitter (dpyinfo->display);
     }
 
+#if defined USE_GTK && defined HAVE_XSETIOERROREXITHANDLER
+  /* This is a safe place to call x_connection_closed since
+     we are not inside a GLib prepare/check/dispatch. */
+  if (dpyinfo->io_error && dpyinfo->display)
+    {
+      char const *server = DisplayString (dpyinfo->display);
+      static char const fmt[] = "Connection lost to X server '%s'";
+      USE_SAFE_ALLOCA;
+      char *buf = SAFE_ALLOCA (sizeof fmt - sizeof "%s" + strlen (server) + 1);
+      sprintf (buf, fmt, server);
+      x_connection_closed (dpyinfo->display, buf, true);
+      SAFE_FREE ();
+    }
+#endif /* USE_GTK && HAVE_XSETIOERROREXITHANDLER */
+
 #ifndef USE_GTK
   while (XPending (dpyinfo->display))
     {
@@ -26894,17 +26913,27 @@ x_connection_closed (Display *dpy, const char *error_message, bool ioerror)
          XSync inside the error handler apparently hangs Emacs.  On
          current Xt versions, this isn't needed either.  */
 #ifdef USE_GTK
-      /* A long-standing GTK bug prevents proper disconnect handling
-	 <https://gitlab.gnome.org/GNOME/gtk/issues/221>.  Once,
-	 the resulting Glib error message loop filled a user's disk.
-	 To avoid this, kill Emacs unconditionally on disconnect.  */
+#ifdef HAVE_XSETIOERROREXITHANDLER
+      if (dpyinfo->connection >= 0)
+	delete_keyboard_wait_descriptor (dpyinfo->connection);
+      xg_display_close (dpy);
+      dpyinfo->connection = -1;
+#else
+      /* With GTK, the I/O error is raised from g_main_context_prepare
+	 or g_main_context_check, and both of these share a recursion
+	 counter that is incremented/decremented around callbacks.
+	 A longjmp from here leaves the counter incremented which leads
+	 to an endless flood of warning messages about recursive calls.
+	 With libX11 >= 1.7, we can avoid this using XSetIOErrorExitHandler.
+	 Otherwise, kill Emacs to avoid filling disk with error messages.  */
       shut_down_emacs (0, Qnil);
       fprintf (stderr, "%s\n\
-When compiled with GTK, Emacs cannot recover from X disconnects.\n\
-This is a GTK bug: https://gitlab.gnome.org/GNOME/gtk/issues/221\n\
+When compiled with GTK and libX11 older than 1.7, Emacs cannot\n\
+recover from X disconnects.\n\
 For details, see etc/PROBLEMS.\n",
 	       error_msg);
       emacs_abort ();
+#endif /* ! HAVE_XSETIOERROREXITHANDLER */
 #endif /* USE_GTK */
 
       /* Indicate that this display is dead.  */
@@ -26974,9 +27003,13 @@ For details, see etc/PROBLEMS.\n",
   unbind_to (idx, Qnil);
   clear_waiting_for_input ();
 
-  /* Here, we absolutely have to use a non-local exit (e.g. signal, throw,
-     longjmp), because returning from this function would get us back into
-     Xlib's code which will directly call `exit'.  */
+  /* We have to use a non-local exit (e.g. signal, throw, longjmp).
+     Without XSetIOErrorExitHandler, returning from this function,
+     which is the registered Xlib I/O error handler, would make
+     Xlib call 'exit'.
+     With XSetIOErrorExitHandler, the 'exit' is prevented, but we
+     still need to unwind to top level since the frames and terminal
+     for this display are gone.  */
   current_display = NULL;
   error ("%s", error_msg);
 }
@@ -27104,6 +27137,14 @@ x_error_quitter (Display *display, XErrorEvent *event)
 static int NO_INLINE
 x_io_error_quitter (Display *display)
 {
+#if defined USE_GTK &&  defined HAVE_XSETIOERROREXITHANDLER
+  /* Calling x_connection_closed from inside GLib dispatch leads
+     to an infinite error message loop, so record the error here
+     and close the connection from a safe point in XTread_socket.  */
+  struct x_display_info *dpyinfo = x_display_info_for_display (display);
+  if (dpyinfo)
+    dpyinfo->io_error = true;
+#else
   char const *server = DisplayString (display);
   static char const fmt[] = "Connection lost to X server '%s'";
   USE_SAFE_ALLOCA;
@@ -27111,9 +27152,18 @@ x_io_error_quitter (Display *display)
   sprintf (buf, fmt, server);
   x_connection_closed (display, buf, true);
   SAFE_FREE ();
-
+#endif /* USE_GTK && HAVE_XSETIOERROREXITHANDLER */
   return 0;
 }
+
+/* Called after the I/O error handler above, if using GTK and libX11 >= 1.7
+ * This prevents the process from exiting.  */
+#if defined USE_GTK && defined HAVE_XSETIOERROREXITHANDLER
+static void
+x_io_error_exit_handler (Display *dpy, void *data)
+{
+}
+#endif /* USE_GTK && HAVE_XSETIOERROREXITHANDLER */
 
 
 /* Changing the font of the frame.  */
@@ -29794,6 +29844,20 @@ x_free_frame_resources (struct frame *f)
       dpyinfo->n_protected_windows = 0;
 #endif
     }
+#if defined USE_GTK && defined HAVE_XSETIOERROREXITHANDLER
+  else /* dpyinfo->display == 0  */
+    {
+      /* The display is disconnected (see x_io_error_quitter) but the
+	 process survives, so the frame's GTK widgets must still be
+	 destroyed.  Otherwise, a leftover GtkWindow stays in the
+	 GtkWindowGroup holding a finalized GdkScreen, and the next grab
+	 walks the group and trips GDK_IS_SCREEN.  gtk_widget_destroy is
+	 safe here since XlibDisplayIOError makes every request on the
+	 dead display a no-op.  */
+      tear_down_x_back_buffer (f);
+      xg_free_frame_widgets (f);
+    }
+#endif /* USE_GTK && HAVE_XSETIOERROREXITHANDLER */
 
 #ifdef HAVE_GTK3
   if (FRAME_OUTPUT_DATA (f)->scrollbar_background_css_provider)
@@ -29848,11 +29912,15 @@ x_destroy_window (struct frame *f)
 {
   struct x_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
 
+#if defined USE_GTK && defined HAVE_XSETIOERROREXITHANDLER
+  x_free_frame_resources (f);
+#else
   /* If a display connection is dead, don't try sending more
      commands to the X server.  */
   if (dpyinfo->display != 0)
     x_free_frame_resources (f);
 
+#endif
   xfree (f->output_data.x->saved_menu_event);
 
 #ifdef HAVE_X_I18N
@@ -30982,6 +31050,10 @@ x_term_init (Lisp_Object display_name, char *xrm_option, char *resource_name)
   dpyinfo->connection = ConnectionNumber (dpyinfo->display);
 #ifdef USE_XCB
   dpyinfo->xcb_connection = xcb_conn;
+#endif
+#if defined USE_GTK && defined HAVE_XSETIOERROREXITHANDLER
+  /* Override Xlib "exit after error handler returns" behavior */
+  XSetIOErrorExitHandler (dpy, x_io_error_exit_handler, NULL);
 #endif
 
   /* https://lists.gnu.org/r/emacs-devel/2015-11/msg00194.html  */
@@ -32186,8 +32258,10 @@ x_delete_terminal (struct terminal *terminal)
   if (dpyinfo->modmap)
     XFreeModifiermap (dpyinfo->modmap);
 
-  /* No more input on this descriptor.  */
-  delete_keyboard_wait_descriptor (dpyinfo->connection);
+  /* No more input on this descriptor. x_connection_closed may
+   have already closed it */
+  if (dpyinfo->connection >= 0)
+    delete_keyboard_wait_descriptor (dpyinfo->connection);
   /* Mark as dead. */
   dpyinfo->connection = -1;
 
