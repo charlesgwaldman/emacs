@@ -447,8 +447,12 @@ struct x_display_info
      window manager because it is not trusted by the X server.  */
   bool untrusted;
 
-  /* True if we have recieved an I/O error on this display */
+#if defined USE_GTK && defined HAVE_XSETIOERROREXITHANDLER
+  /* True if we have received an I/O error on this display.  */
   bool io_error;
+  /* True if we are in the deferred-teardown path.  */
+  bool finishing_teardown;
+#endif
 
   /* The Screen this connection is connected to.  */
   Screen *screen;

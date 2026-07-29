@@ -682,6 +682,10 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #include <xcb/shape.h>
 #endif
 
+#if defined USE_GTK && defined HAVE_XSETIOERROREXITHANDLER
+#include <X11/Xlibint.h>
+#endif
+
 /* Load sys/types.h if not already loaded.
    In some systems loading it twice is suicidal.  */
 #ifndef makedev
@@ -25707,6 +25711,7 @@ XTread_socket (struct terminal *terminal, struct input_event *hold_quit)
       USE_SAFE_ALLOCA;
       char *buf = SAFE_ALLOCA (sizeof fmt - sizeof "%s" + strlen (server) + 1);
       sprintf (buf, fmt, server);
+      dpyinfo->finishing_teardown = true;
       x_connection_closed (dpyinfo->display, buf, true);
       SAFE_FREE ();
     }
@@ -26772,6 +26777,21 @@ x_connection_closed (Display *dpy, const char *error_message, bool ioerror)
   current_display = dpy;
 
   dpyinfo = x_display_info_for_display (dpy);
+
+#if defined USE_GTK && defined HAVE_XSETIOERROREXITHANDLER
+  if (dpyinfo)
+    dpyinfo->finishing_teardown = true;
+  /* With XlibDisplayIOError set, _XSend returns without draining
+     the output buffer.  Once the buffer fills, _XData32 spins and
+     _XGetRequest returns NULL.  Keep the flag clear during
+     teardown so requests on the dead connection are discarded
+     through _XSend's normal path (xcb short-circuits on
+     has_error).  The exit handler clears it again each time a read
+     path sets it.  */
+  dpy->flags &= ~XlibDisplayIOError;
+
+#endif /* USE_GTK && HAVE_XSETIOERROREXITHANDLER */
+
   error_msg = alloca (strlen (error_message) + 1);
   strcpy (error_msg, error_message);
 
@@ -27156,12 +27176,20 @@ x_io_error_quitter (Display *display)
   return 0;
 }
 
-/* Called after the I/O error handler above, if using GTK and libX11 >= 1.7
- * This prevents the process from exiting.  */
 #if defined USE_GTK && defined HAVE_XSETIOERROREXITHANDLER
+/* Called after the I/O error handler above, if using GTK and libX11
+   >= 1.7.  This prevents the process from exiting.  It also keeps
+   XlibDisplayIOError cleared when _XIOError re-sets it during
+   teardown, so requests on the dead connection reach _XSend's
+   discard path instead of accumulating in the output buffer --
+   with the flag set, a full buffer makes _XData32 loop forever
+   waiting for space that can never appear.  */
 static void
 x_io_error_exit_handler (Display *dpy, void *data)
 {
+  struct x_display_info *dpyinfo = data;
+  if (dpyinfo->finishing_teardown)
+    dpy->flags &= ~XlibDisplayIOError;
 }
 #endif /* USE_GTK && HAVE_XSETIOERROREXITHANDLER */
 
@@ -29852,8 +29880,9 @@ x_free_frame_resources (struct frame *f)
 	 destroyed.  Otherwise, a leftover GtkWindow stays in the
 	 GtkWindowGroup holding a finalized GdkScreen, and the next grab
 	 walks the group and trips GDK_IS_SCREEN.  gtk_widget_destroy is
-	 safe here since XlibDisplayIOError makes every request on the
-	 dead display a no-op.  */
+	 safe here since requests are discarded by _XSend because
+	 xcb is a no-op on 'has_error' (we keep XlibDisplayIOError
+	 cleared during teardown).  */
       tear_down_x_back_buffer (f);
       xg_free_frame_widgets (f);
     }
@@ -31053,7 +31082,7 @@ x_term_init (Lisp_Object display_name, char *xrm_option, char *resource_name)
 #endif
 #if defined USE_GTK && defined HAVE_XSETIOERROREXITHANDLER
   /* Override Xlib "exit after error handler returns" behavior */
-  XSetIOErrorExitHandler (dpy, x_io_error_exit_handler, NULL);
+  XSetIOErrorExitHandler (dpy, x_io_error_exit_handler, dpyinfo);
 #endif
 
   /* https://lists.gnu.org/r/emacs-devel/2015-11/msg00194.html  */
