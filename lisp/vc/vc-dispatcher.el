@@ -223,10 +223,16 @@ Another is that undo information is not kept."
 
 (defvar vc-sentinel-movepoint)
 
+(defface vc-mode-line-busy-indicator
+  '((t :inherit mode-line-emphasis))
+  "Face for VC mode line indicator that a command is in progress."
+  :version "32.1"
+  :group 'mode-line-faces)
+
 (defun vc-set-mode-line-busy-indicator ()
   (setq mode-line-process
 	(concat " " (propertize "[waiting...]"
-                                'face 'mode-line-emphasis
+                                'face 'vc-mode-line-busy-indicator
                                 'help-echo
                                 "A command is in progress in this buffer"))))
 
@@ -696,7 +702,11 @@ If the current buffer visits a file, call `vc-refresh-state'."
                            (with-current-buffer buf
                              ,@body))))))
       (cond ((derived-mode-p 'vc-dir-mode)
-             (run-delayed (vc-dir-refresh)))
+             (run-delayed
+              ;; Avoid interrupting the user with prompts to save
+              ;; buffers.
+              (let ((non-essential t))
+                (vc-dir-refresh))))
             ((derived-mode-p 'dired-mode)
              (run-delayed
               (when (= (buffer-modified-tick buf) tick)

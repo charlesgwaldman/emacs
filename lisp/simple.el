@@ -748,6 +748,8 @@ When called from Lisp code, ARG may be a prefix string to copy."
      :height 0.1 :background "#505050")
     (((type graphic) (background light))
      :height 0.1 :background "#a0a0a0")
+    (((supports :strike-through t))
+     :foreground "ForestGreen" :strike-through t)
     (t
      :foreground "ForestGreen" :underline t))
   "Face for separator lines."
@@ -760,12 +762,14 @@ This uses the `separator-line' face.
 
 If LENGTH is nil, use the window width."
   (if (or (display-graphic-p)
+          (display-supports-face-attributes-p '(:strike-through t))
           (display-supports-face-attributes-p '(:underline t)))
       (if length
           (concat (propertize (make-string length ?\s) 'face 'separator-line)
                   "\n")
         (propertize "\n" 'face '(:inherit separator-line :extend t)))
-    ;; In terminals (that don't support underline), use a line of dashes.
+    ;; In terminals that don't support underline or strike-through, use
+    ;; a line of dashes.
     (concat (propertize (make-string (or length (1- (window-width))) ?-)
                         'face 'separator-line)
             "\n")))
@@ -6684,8 +6688,10 @@ and KILLP is t if a prefix arg was specified."
 
 (defun char-uppercase-p (char)
   "Return non-nil if CHAR is an upper-case character.
+A character is considered upper-case if there's a corresponding
+lower-case character.
 If the Unicode tables are not yet available, e.g. during bootstrap,
-then gives correct answers only for ASCII characters."
+this function gives correct return values only for ASCII characters."
   (cond ((unicode-property-table-internal 'lowercase)
          (characterp (get-char-code-property char 'lowercase)))
         ((<= ?A char ?Z))))
@@ -10176,8 +10182,11 @@ the completions is popped up and down."
           (last-col (progn
                       (first-completion)
                       (goto-char (pos-eol))
-                      (goto-char (previous-single-property-change
-                                  (point) 'mouse-face))
+                      ;; Go to the beginning of the candidate.  We loop
+                      ;; to move past any completion annotations.
+                      (while (not (get-text-property (point) 'mouse-face))
+                        (goto-char
+                         (previous-single-property-change (point) 'mouse-face)))
                       (current-column))))
       (if (zerop last-col)
           ;; If there is only one column of completions, the last
@@ -10269,7 +10278,9 @@ Also see the `completion-auto-wrap' variable."
                          (not (eq completions-format 'vertical))))
             (if (and (eq completion-auto-select t) tabcommand
                      (minibufferp completion-reference-buffer))
-                (throw 'bound nil)
+                (progn
+                  (completions--clear-selection)
+                  (throw 'bound nil))
               (first-completion))))
         (when (and (eq completions-format 'vertical)
                    (or last
@@ -10321,8 +10332,8 @@ Also see the `completion-auto-wrap' variable."
                    (completion--move-to-candidate-start))
                   ((and (eq completion-auto-select t) tabcommand
                         (minibufferp completion-reference-buffer))
-                   (progn
-                     (throw 'bound nil)))
+                   (completions--clear-selection)
+                   (throw 'bound nil))
                   (t
                    (last-completion)))))
         (setq n (1+ n))))
@@ -10352,29 +10363,31 @@ of completions.
 
 Also see the `completion-auto-wrap' variable."
   (interactive "p")
-  (let (line column pos found last first)
-    (when (and (bobp)
-               (> n 0)
-               (get-text-property (point) 'mouse-face)
-               (not (get-text-property (point) 'first-completion)))
-      (let ((inhibit-read-only t))
-        (add-text-properties (point) (1+ (point)) '(first-completion t)))
-      (setq n (1- n)))
+  (let ((tabcommand (member (this-command-keys) '("\t" [backtab])))
+        line column pos found last first)
+    (catch 'bound
+      (when (and (bobp)
+                 (> n 0)
+                 (get-text-property (point) 'mouse-face)
+                 (not (get-text-property (point) 'first-completion)))
+        (let ((inhibit-read-only t))
+          (add-text-properties (point) (1+ (point)) '(first-completion t)))
+        (setq n (1- n)))
 
-    (if (get-text-property (point) 'mouse-face)
-        ;; If in a completion, move to the start of it.
-        (completion--move-to-candidate-start)
-      ;; Try to move to the previous completion.
-      (setq pos (previous-single-property-change (point) 'mouse-face))
-      (if pos
-          ;; Move to the start of the previous completion.
-          (progn
-            (goto-char pos)
-            (unless (get-text-property (point) 'mouse-face)
-              (goto-char (previous-single-property-change
-                          (point) 'mouse-face nil (point-min)))))
-        (cond ((> n 0) (setq n (1- n)) (first-completion))
-              ((< n 0) (first-completion)))))
+      (if (get-text-property (point) 'mouse-face)
+          ;; If in a completion, move to the start of it.
+          (completion--move-to-candidate-start)
+        ;; Try to move to the previous completion.
+        (setq pos (previous-single-property-change (point) 'mouse-face))
+        (if pos
+            ;; Move to the start of the previous completion.
+            (progn
+              (goto-char pos)
+              (unless (get-text-property (point) 'mouse-face)
+                (goto-char (previous-single-property-change
+                            (point) 'mouse-face nil (point-min)))))
+          (cond ((> n 0) (setq n (1- n)) (first-completion))
+                ((< n 0) (first-completion)))))
 
     (while (> n 0)
       (setq found nil pos (point) column (current-column)
@@ -10382,7 +10395,12 @@ Also see the `completion-auto-wrap' variable."
             last (= (point) (save-excursion (last-completion) (point))))
       (if (and (eq completions-format 'vertical)
                completion-auto-wrap last)
-          (first-completion)            ; Wrap from last to first item.
+          (if (and (eq completion-auto-select t) tabcommand
+                   (minibufferp completion-reference-buffer))
+              (progn
+                (completions--clear-selection)
+                (throw 'bound nil))     ; Skip to minibuffer.
+            (first-completion))         ; Wrap from last to first item.
         (completion--move-to-candidate-end)
         (while (and (not found)
                     (eq (forward-line 1) 0)
@@ -10419,7 +10437,12 @@ Also see the `completion-auto-wrap' variable."
             first (= (point) (save-excursion (first-completion) (point))))
       (if (and (eq completions-format 'vertical)
                completion-auto-wrap first)
-          (last-completion)             ; Wrap from first to last item.
+          (if (and (eq completion-auto-select t) tabcommand
+                   (minibufferp completion-reference-buffer))
+              (progn
+                (completions--clear-selection)
+                (throw 'bound nil))     ; Skip to minibuffer.
+            (last-completion))          ; Wrap from first to last item.
         (completion--move-to-candidate-start)
         (while (and (not found)
                     (eq (forward-line -1) 0)
@@ -10456,7 +10479,10 @@ Also see the `completion-auto-wrap' variable."
                 (setq pos (point))
                 (forward-line))
               (goto-char pos)))))
-      (setq n (1+ n)))))
+      (setq n (1+ n))))
+
+    (when (/= 0 n)
+      (switch-to-minibuffer))))
 
 (defun next-completion (&optional n)
   "Move according to `completions-format' to next completion item.

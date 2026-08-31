@@ -193,10 +193,7 @@ In some corner cases you may need to resort to
       ;; Can't use backquote here, it's too early in the bootstrap.
       (setq expr
             (cons
-             (list 'setq (car pairs)
-                   (list 'prog1
-                    (car (cdr pairs))
-                    (list 'make-local-variable (list 'quote (car pairs)))))
+             (list 'set-local (list 'quote (car pairs)) (car (cdr pairs)))
              expr))
       (setq pairs (cdr (cdr pairs))))
     (macroexp-progn (nreverse expr))))
@@ -6070,7 +6067,7 @@ Modifies the match data; use `save-match-data' if necessary."
                  (< start len)))))
     ;; field after last separator, if any
     (let ((item (if (= start 0)
-                    string    ; optimisation when there is no separator
+                    string    ; optimization when there is no separator
                   (substring string start))))
       (when trim
         (let* ((item-beg (if (string-match trim-left-re item 0)
@@ -6558,7 +6555,10 @@ If POS is outside the buffer's accessible portion, return nil."
     (let ((st (if parse-sexp-lookup-properties
 		  (get-char-property pos 'syntax-table))))
       (if (consp st) st
-	(aref (or st (syntax-table)) (char-after pos))))))
+	(let ((c (char-after pos)))
+	  (aref (or st (syntax-table))
+	        (if enable-multibyte-characters
+	            c (unibyte-char-to-multibyte c))))))))
 
 (defun syntax-class (syntax)
   "Return the code for the syntax class described by SYNTAX.
@@ -7238,7 +7238,7 @@ area is busy with something else."
     (unless (and (eq (progress-reporter-context reporter) 'async)
                  (current-message)
                  (not (string-prefix-p text (current-message))))
-      (setq update-text (concat (if update-text " " "") update-text))
+      (setq update-text (if update-text (format " %s" update-text) ""))
       (pcase state
         ((pred floatp)
          (if (plusp state)
