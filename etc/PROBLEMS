@@ -123,21 +123,22 @@ load-path.
 
 * Crash bugs
 
-** When Emacs is compiled with Gtk+, closing a display kills Emacs.
+** When Emacs is compiled with GTK, closing a display kills Emacs.
 
-There is a long-standing bug in GTK that prevents it from recovering
-from disconnects: https://gitlab.gnome.org/GNOME/gtk/issues/221
+For instance, when Emacs runs as a daemon and an X frame is created,
+and the X server for that frame exits unexpectedly, Emacs exits as
+well.  The same happens for a fatal X protocol error.
 
-Thus, for instance, when Emacs is run as a server on a text terminal,
-and an X frame is created, and the X server for that frame crashes or
-exits unexpectedly, Emacs must exit to prevent a GTK error that would
+This is because Emacs cannot clean up the dead display from inside
+an Xlib error handler
+exits unexpectedly, Emacs must exit to prevent an error that would
 result in an endless loop.
 
 If you need Emacs to be able to recover from closing displays, compile
-it with the Lucid toolkit instead of GTK.
+it with the Lucid toolkit instead of GTK, or, if using GTK,  make sure
+you have libX11 >= 1.8.14, or >= 1.7 with a backport of
+https://gitlab.freedesktop.org/xorg/lib/libx11/-/merge_requests/305
 
-One possible mitigation for the problem is described in
-https://debbugs.gnu.org/81124
 
 ** Emacs compiled with GTK+ 3 crashes when run under some X servers.
 This happens when the X server does not provide certain display
@@ -166,9 +167,6 @@ This is known to happen on elementary OS GNU/Linux systems.
 The error message is:
 
   X protocol error: BadMatch (invalid parameter attributes) on protocol request 140
-  When compiled with GTK, Emacs cannot recover from X disconnects.
-  This is a GTK bug: https://gitlab.gnome.org/GNOME/gtk/issues/221
-  For details, see etc/PROBLEMS.
   Fatal error 6: Aborted
 
 followed by a C backtrace.  (Sometimes the offending protocol request

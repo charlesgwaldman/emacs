@@ -567,6 +567,20 @@ OPTION_DEFAULT_ON([toolkit-scroll-bars],[don't use Motif/Xaw3d/GTK toolkit scrol
 OPTION_DEFAULT_ON([xaw3d],[don't use Xaw3d])
 OPTION_DEFAULT_ON([xim],[at runtime, default X11 XIM to off])
 OPTION_DEFAULT_ON([xdbe],[don't use X11 double buffering support])
+AC_ARG_WITH([deferred-x-teardown],
+  [AS_HELP_STRING([--with-deferred-x-teardown@<:@=VALUE@:>@],
+    [survive X disconnects under GTK instead of aborting
+     ('yes', 'no', or 'auto': default 'auto').  Requires libX11 with
+     XSetIOErrorHandler and the _XSend I/O-error fix (572f5282);
+     'auto' enables this for libX11 1.8.14 or newer, 'yes' forces it on.])],
+    [ case "${withval}" in
+        yes|no|auto) val=$withval ;;
+        *) AC_MSG_ERROR(['--with-deferred-x-teardown=$withval' is invalid;
+this option's value should be 'yes', 'no', or 'auto'.]) ;;
+      esac
+      with_deferred_x_teardown=$val
+    ],
+    [with_deferred_x_teardown=auto])
 AC_ARG_WITH([ns],[AS_HELP_STRING([--with-ns],
 [use Nextstep (macOS Cocoa or GNUstep) windowing system.
 On by default on macOS.])],[],[with_ns=maybe])
@@ -3505,6 +3519,7 @@ if test "${HAVE_X11}" = "yes"; then
 
   AC_CHECK_FUNCS([XrmSetDatabase XScreenResourceString XScreenNumberOfScreen])
   AC_CHECK_FUNCS([XDisplayCells XDestroySubwindows])
+  AC_CHECK_FUNCS([XSetIOErrorExitHandler])
 fi
 
 if test "${window_system}" = "x11"; then
@@ -3827,16 +3842,47 @@ if test x"$pkg_check_gtk" = xyes; then
     GTK_OBJ="gtkutil.o $GTK_OBJ"
     term_header=$gtk_term_header
     USE_X_TOOLKIT=none
-    AC_MSG_WARN([[Your version of Gtk+ will have problems with
-       closing open displays.  This is no problem if you just use
-       one display, but if you use more than one and close one of them
-       Emacs may crash.
-       See https://gitlab.gnome.org/GNOME/gtk/issues/221]])
+    AC_MSG_WARN([[Older GTK versions have had problems when Emacs
+       closes one of several open displays; see etc/PROBLEMS.]])
   fi
-
 fi
+
 AC_SUBST([GTK_OBJ])
 
+if test "${with_deferred_x_teardown}" = "yes" \
+   && { test "${HAVE_X_WINDOWS}" != "yes" || test "${HAVE_GTK}" != "yes" \
+        || test "$ac_cv_func_XSetIOErrorExitHandler" != "yes"; }; then
+  AC_MSG_ERROR(['--with-deferred-x-teardown' requires an X build with GTK
+and libX11 1.7 or newer (for XSetIOErrorExitHandler)])
+fi
+
+AC_MSG_CHECKING([whether to defer X teardown on error])
+if test "${with_deferred_x_teardown}" != "no" \
+   && test "${HAVE_X_WINDOWS}" = "yes" && test "${HAVE_GTK}" = "yes" \
+   && test "$ac_cv_func_XSetIOErrorExitHandler" = "yes"; then
+  if test "${with_deferred_x_teardown}" = "auto"; then
+    dnl libX11 1.7 or newer is needed for XSetIOErrorExitHandler,
+    dnl but deferred teardown also needs the _XSend fix for the output
+    dnl buffer being left full after an I/O error (libX11 commit
+    dnl 572f5282), first released in libX11 1.8.14.
+    dnl For a backported older libX11, use
+    dnl --with-deferred-x-teardown=yes
+    if test -n "$PKG_CONFIG" \
+       && $PKG_CONFIG --atleast-version=1.8.14 x11; then
+      with_deferred_x_teardown=yes
+    else
+      with_deferred_x_teardown=no
+    fi
+  fi
+else
+  with_deferred_x_teardown=no
+fi
+AC_MSG_RESULT([$with_deferred_x_teardown])
+
+if test "${with_deferred_x_teardown}" = "yes"; then
+  AC_DEFINE([X_DEFER_TEARDOWN], [1],
+    [Define to survive X disconnects by deferring display teardown.])
+fi
 
 if test "${HAVE_GTK}" = "yes"; then
 
@@ -7695,6 +7741,7 @@ AS_ECHO(["  Does Emacs use -lXaw3d?                                 ${HAVE_XAW3D
   Does Emacs have native lisp compiler?                   ${HAVE_NATIVE_COMP}
   Does Emacs use version 2 of the X Input Extension?      ${HAVE_XINPUT2}
   Does Emacs generate a smaller-size Japanese dictionary? ${with_small_ja_dic}
+  Does Emacs defer teardown on X11 errors?                ${with_deferred_x_teardown}
 "])
 
 if test -n "${EMACSDATA}"; then
