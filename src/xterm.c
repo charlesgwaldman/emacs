@@ -29945,15 +29945,7 @@ x_destroy_window (struct frame *f)
 {
   struct x_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
 
-#ifdef X_DEFER_TEARDOWN
   x_free_frame_resources (f);
-#else
-  /* If a display connection is dead, don't try sending more
-     commands to the X server.  */
-  if (dpyinfo->display != 0)
-    x_free_frame_resources (f);
-
-#endif
   xfree (f->output_data.x->saved_menu_event);
 
 #ifdef HAVE_X_I18N
