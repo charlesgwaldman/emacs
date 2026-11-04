@@ -3693,11 +3693,8 @@ if test x"$pkg_check_gtk" = xyes; then
     GTK_OBJ="gtkutil.o $GTK_OBJ"
     term_header=$gtk_term_header
     USE_X_TOOLKIT=none
-    AC_MSG_WARN([[Your version of Gtk+ will have problems with
-       closing open displays.  This is no problem if you just use
-       one display, but if you use more than one and close one of them
-       Emacs may crash.
-       See https://gitlab.gnome.org/GNOME/gtk/issues/221]])
+    AC_MSG_WARN([[Emacs built with GTK aborts when an X display is lost
+         (disconnect or fatal protocol error).  See etc/PROBLEMS.]])
   fi
 
 fi
