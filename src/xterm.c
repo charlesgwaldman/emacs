@@ -29814,9 +29814,10 @@ x_free_frame_resources (struct frame *f)
   /* Consider a frame being unfocused with no following FocusIn event
      while an older focus from another seat exists.  The client
      pointer should then revert to the other seat, so handle potential
-     focus changes.  */
+     focus changes.  But not on a dead display - every frame is being
+     deleted so there is nothing for the focus to revert to.  */
 
-  if (dpyinfo->supports_xi2)
+  if (dpyinfo->supports_xi2 && dpyinfo->display)
     xi_handle_focus_change (dpyinfo);
 #endif /* !USE_X_TOOLKIT && (!USE_GTK || HAVE_GTK3) */
 #endif /* HAVE_XINPUT2 */
@@ -29832,11 +29833,8 @@ x_destroy_window (struct frame *f)
 {
   struct x_display_info *dpyinfo = FRAME_DISPLAY_INFO (f);
 
-  /* If a display connection is dead, don't try sending more
-     commands to the X server.  */
-  if (dpyinfo->display != 0)
-    x_free_frame_resources (f);
-
+  /* x_free_frame_resources is safe to call on a dead display.  */
+  x_free_frame_resources (f);
   xfree (f->output_data.x->saved_menu_event);
 
 #ifdef HAVE_X_I18N
