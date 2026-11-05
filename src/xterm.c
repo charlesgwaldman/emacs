@@ -1163,6 +1163,10 @@ static bool x_alloc_nearest_color_1 (Display *, Colormap, XColor *);
 static void x_raise_frame (struct frame *);
 static void x_lower_frame (struct frame *);
 static int x_io_error_quitter (Display *);
+#ifdef X_DEFER_TEARDOWN
+static void x_io_error_exit_handler (Display *, void *);
+#endif
+static void x_connection_closed (Display *, const char *, bool);
 static struct terminal *x_create_terminal (struct x_display_info *);
 static void x_frame_rehighlight (struct x_display_info *);
 
@@ -25670,6 +25674,30 @@ XTread_socket (struct terminal *terminal, struct input_event *hold_quit)
       x_io_error_quitter (dpyinfo->display);
     }
 
+#ifdef X_DEFER_TEARDOWN
+  /* This is a safe place to call x_connection_closed since we are not
+     inside a GLib prepare/check/dispatch or an Xlib error handler.  */
+  if (dpyinfo->display && (dpyinfo->io_error || dpyinfo->xproto_error))
+    {
+      if (dpyinfo->io_error)
+	{
+	  char const *server = DisplayString (dpyinfo->display);
+	  static char const fmt[] = "Connection lost to X server '%s'";
+	  USE_SAFE_ALLOCA;
+	  char *buf = SAFE_ALLOCA (sizeof fmt - sizeof "%s"
+				   + strlen (server) + 1);
+	  sprintf (buf, fmt, server);
+	  x_connection_closed (dpyinfo->display, buf, true);
+	  SAFE_FREE ();
+	}
+      else
+	{
+	  x_connection_closed (dpyinfo->display,
+			       dpyinfo->xproto_error_message, false);
+	}
+    }
+#endif
+
 #ifndef USE_GTK
   while (XPending (dpyinfo->display))
     {
@@ -26871,17 +26899,43 @@ x_connection_closed (Display *dpy, const char *error_message, bool ioerror)
          XSync inside the error handler apparently hangs Emacs.  On
          current Xt versions, this isn't needed either.  */
 #ifdef USE_GTK
-      /* A long-standing GTK bug prevents proper disconnect handling
-	 <https://gitlab.gnome.org/GNOME/gtk/issues/221>.  Once,
-	 the resulting Glib error message loop filled a user's disk.
-	 To avoid this, kill Emacs unconditionally on disconnect.  */
+      /* With GTK, neither closing the display nor unwinding the stack
+	 is safe from inside the Xlib error handlers.
+
+	 For I/O errors, the error may be raised from
+	 g_main_context_prepare or g_main_context_check, which share a
+	 recursion counter that is incremented/decremented around
+	 callbacks.  Exiting via longjmp (as 'error' does) leaves the
+	 counter incremented, producing an endless flood of warnings
+	 about recursive GLib calls.
+
+	 For uncaught X protocol errors, we are called from _XError,
+	 which may be nested inside _XReply, in which case the
+	 teardown's own requests would lead to a deadlock.
+
+	 With X_DEFER_TEARDOWN, x_io_error_quitter and x_error_quitter
+	 only record the error and return (XSetIOErrorExitHandler
+	 prevents Xlib from exiting), and XTread_socket calls us later
+	 from a safe point.  Without it, kill Emacs, since we cannot
+	 recover.  */
+#ifdef X_DEFER_TEARDOWN
+      /* xg_display_close closes the connection's descriptor.  Mark it
+	 as closed (-1) so x_delete_terminal does not close it again
+	 (Bug#19147).  This also makes x_delete_terminal skip
+	 delete_keyboard_wait_descriptor, so do that here.  */
+      if (dpyinfo->connection >= 0)
+	delete_keyboard_wait_descriptor (dpyinfo->connection);
+      xg_display_close (dpy);
+      dpyinfo->connection = -1;
+#else
       shut_down_emacs (0, Qnil);
       fprintf (stderr, "%s\n\
-When compiled with GTK, Emacs cannot recover from X disconnects.\n\
-This is a GTK bug: https://gitlab.gnome.org/GNOME/gtk/issues/221\n\
+This Emacs was built with GTK against libX11 older than 1.8.14, so it\n\
+cannot recover from losing an X display.\n\
 For details, see etc/PROBLEMS.\n",
 	       error_msg);
       emacs_abort ();
+#endif /* !X_DEFER_TEARDOWN */
 #endif /* USE_GTK */
 
       /* Indicate that this display is dead.  */
@@ -26951,9 +27005,13 @@ For details, see etc/PROBLEMS.\n",
   unbind_to (idx, Qnil);
   clear_waiting_for_input ();
 
-  /* Here, we absolutely have to use a non-local exit (e.g. signal, throw,
-     longjmp), because returning from this function would get us back into
-     Xlib's code which will directly call `exit'.  */
+  /* We have to use a non-local exit (e.g. signal, throw, longjmp).
+     Without X_DEFER_TEARDOWN, returning from this function would get us
+     back into Xlib's code, which will directly call 'exit'.
+
+     With X_DEFER_TEARDOWN, we are called from XTread_socket instead,
+     but we still need to unwind to top level since the frames and
+     terminal for this display are gone.  */
   current_display = NULL;
   error ("%s", error_msg);
 }
@@ -27041,7 +27099,9 @@ x_error_handler (Display *display, XErrorEvent *event)
 
 /* This is the usual handler for X protocol errors.
    It kills all frames on the display that we got the error for.
-   If that was the only one, it prints an error message and kills Emacs.  */
+   If that was the only one, it prints an error message and kills Emacs.
+   With X_DEFER_TEARDOWN, it only records the error and the teardown
+   happens the next time XTread_socket runs for this display.  */
 
 /* .gdbinit puts a breakpoint here, so make sure it is not inlined.  */
 
@@ -27052,6 +27112,11 @@ x_error_quitter (Display *display, XErrorEvent *event)
 		      + INT_STRLEN_BOUND (unsigned long)
 		      + INT_STRLEN_BOUND (XID)
 		      + INT_STRLEN_BOUND (int)];
+#ifdef X_DEFER_TEARDOWN
+  /* Check that the buffer in dpyinfo is big enough.  */
+  verify (sizeof buf1
+	  <= sizeof ((struct x_display_info *) 0)->xproto_error_message);
+#endif
 
   /* Ignore BadName errors.  They can happen because of fonts
      or colors that are not defined.  */
@@ -27070,17 +27135,40 @@ x_error_quitter (Display *display, XErrorEvent *event)
 	   "This is a bug!  Please report this to bug-gnu-emacs@gnu.org!\n",
 	   buf, event->request_code, event->serial, event->resourceid,
 	   event->minor_code);
+#ifdef X_DEFER_TEARDOWN
+  /* Xlib permits an X error handler to return, unlike the I/O error
+     handler.  Record the error for XTread_socket (see
+     x_connection_closed), keeping only the first one, since the display
+     is going away anyway.  */
+  struct x_display_info *dpyinfo = x_display_info_for_display (display);
+  if (dpyinfo && !dpyinfo->io_error && !dpyinfo->xproto_error)
+    {
+      strcpy (dpyinfo->xproto_error_message, buf1);
+      dpyinfo->xproto_error = true;
+    }
+#else
   x_connection_closed (display, buf1, false);
+#endif
 }
 
 
 /* This is the handler for X IO errors, always.
    It kills all frames on the display that we lost touch with.
-   If that was the only one, it prints an error message and kills Emacs.  */
+   If that was the only one, it prints an error message and kills Emacs.
+   With X_DEFER_TEARDOWN, it only records the error and the teardown
+   happens the next time XTread_socket runs for this display.  */
 
 static int NO_INLINE
 x_io_error_quitter (Display *display)
 {
+#ifdef X_DEFER_TEARDOWN
+  /* See comments at x_connection_closed for why teardown cannot run
+     from here.  Instead, record the error here and close the connection
+     later, from a safe point in XTread_socket.  */
+  struct x_display_info *dpyinfo = x_display_info_for_display (display);
+  if (dpyinfo)
+    dpyinfo->io_error = true;
+#else
   char const *server = DisplayString (display);
   static char const fmt[] = "Connection lost to X server '%s'";
   USE_SAFE_ALLOCA;
@@ -27088,9 +27176,20 @@ x_io_error_quitter (Display *display)
   sprintf (buf, fmt, server);
   x_connection_closed (display, buf, true);
   SAFE_FREE ();
-
+#endif
   return 0;
 }
+
+#ifdef X_DEFER_TEARDOWN
+/* If X_DEFER_TEARDOWN is enabled, Xlib calls this after the I/O error
+   handler returns, instead of its default behavior (exit).  Doing
+   nothing here allows x_io_error_quitter to return so that
+   XTread_socket can tear down the display later.  */
+static void
+x_io_error_exit_handler (Display *dpy, void *data)
+{
+}
+#endif
 
 
 /* Changing the font of the frame.  */
@@ -29778,6 +29877,21 @@ x_free_frame_resources (struct frame *f)
       dpyinfo->n_protected_windows = 0;
 #endif
     }
+#ifdef X_DEFER_TEARDOWN
+  else /* dpyinfo->display == 0  */
+    {
+      /* The display is disconnected (see x_connection_closed) but the
+	 process survives, so the frame's GTK widgets must still be
+	 destroyed.  Otherwise, a leftover GtkWindow stays in the
+	 GtkWindowGroup, holding a finalized GdkScreen.
+	 gtk_widget_destroy is safe here since libX11 1.8.14 or newer
+	 discards requests on a dead display (older versions could
+	 spin in _XData32 or crash in _XGetRequest once the output
+	 buffer filled).  */
+      tear_down_x_back_buffer (f);
+      xg_free_frame_widgets (f);
+    }
+#endif
 
 #ifdef HAVE_GTK3
   if (FRAME_OUTPUT_DATA (f)->scrollbar_background_css_provider)
@@ -30973,6 +31087,10 @@ x_term_init (Lisp_Object display_name, char *xrm_option, char *resource_name)
   dpyinfo->connection = ConnectionNumber (dpyinfo->display);
 #ifdef USE_XCB
   dpyinfo->xcb_connection = xcb_conn;
+#endif
+#ifdef X_DEFER_TEARDOWN
+  /* Override Xlib default "exit after error handler returns" behavior.  */
+  XSetIOErrorExitHandler (dpy, x_io_error_exit_handler, NULL);
 #endif
 
   /* https://lists.gnu.org/r/emacs-devel/2015-11/msg00194.html  */
@@ -32177,8 +32295,10 @@ x_delete_terminal (struct terminal *terminal)
   if (dpyinfo->modmap)
     XFreeModifiermap (dpyinfo->modmap);
 
-  /* No more input on this descriptor.  */
-  delete_keyboard_wait_descriptor (dpyinfo->connection);
+  /* No more input on this descriptor.  x_connection_closed may
+     have already closed it.  */
+  if (dpyinfo->connection >= 0)
+    delete_keyboard_wait_descriptor (dpyinfo->connection);
   /* Mark as dead. */
   dpyinfo->connection = -1;
 

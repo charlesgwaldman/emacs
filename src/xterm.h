@@ -447,6 +447,16 @@ struct x_display_info
      window manager because it is not trusted by the X server.  */
   bool untrusted;
 
+  /* True if an I/O error was seen on this display.  */
+  bool io_error;
+
+  /* True if an uncaught X protocol error was seen on this display.  */
+  bool xproto_error;
+
+  /* Error message for X protocol error, saved for deferred teardown.
+     Must be big enough to hold x_error_quitter's buffer (verified there).  */
+  char xproto_error_message[1024];
+
   /* The Screen this connection is connected to.  */
   Screen *screen;
 

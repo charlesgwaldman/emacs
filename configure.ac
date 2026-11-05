@@ -3371,6 +3371,14 @@ if test "${HAVE_X11}" = "yes"; then
 
   AC_CHECK_FUNCS([XrmSetDatabase XScreenResourceString XScreenNumberOfScreen])
   AC_CHECK_FUNCS([XDisplayCells XDestroySubwindows])
+
+  dnl Surviving an X disconnect needs libX11 1.8.14 or newer, which
+  dnl discards the output buffer after an I/O error (libX11 commit
+  dnl 572f5282).  Older versions can hang or crash during the teardown.
+  AC_CACHE_CHECK([for libX11 1.8.14 or newer], [emacs_cv_x11_xsend_fix],
+    [AS_IF([test -n "$PKG_CONFIG" \
+	    && $PKG_CONFIG --atleast-version=1.8.14 x11],
+       [emacs_cv_x11_xsend_fix=yes], [emacs_cv_x11_xsend_fix=no])])
 fi
 
 if test "${window_system}" = "x11"; then
@@ -3693,13 +3701,23 @@ if test x"$pkg_check_gtk" = xyes; then
     GTK_OBJ="gtkutil.o $GTK_OBJ"
     term_header=$gtk_term_header
     USE_X_TOOLKIT=none
-    AC_MSG_WARN([[Emacs built with GTK aborts when an X display is lost
-         (disconnect or fatal protocol error).  See etc/PROBLEMS.]])
   fi
 
 fi
 AC_SUBST([GTK_OBJ])
 
+X_DEFER_TEARDOWN=no
+if test "${HAVE_GTK}" = "yes" && test "${emacs_cv_x11_xsend_fix}" = "yes"; then
+  X_DEFER_TEARDOWN=yes
+  AC_DEFINE([X_DEFER_TEARDOWN], [1],
+    [Define to survive X disconnects by deferring display teardown
+    (needs libX11 1.8.14 or newer).])
+fi
+
+if test "${HAVE_GTK}" = "yes" && test "${X_DEFER_TEARDOWN}" != "yes"; then
+  AC_MSG_WARN([[Emacs built with GTK aborts when an X display is lost.
+    Build against libX11 1.8.14 or newer to avoid this; see etc/PROBLEMS.]])
+fi
 
 if test "${HAVE_GTK}" = "yes"; then
 
@@ -7467,6 +7485,12 @@ AC_DEFINE_UNQUOTED([EMACS_CONFIG_FEATURES], ["${emacs_config_features}"],
 android_shared_user=
 AS_IF([test -n "$with_shared_user_id"],[android_shared_user="($with_shared_user_id)"])
 
+dnl Builds without GTK have always survived X disconnects.
+X_SURVIVES_DISCONNECT=$X_DEFER_TEARDOWN
+if test "${HAVE_X_WINDOWS}" = "yes" && test "${HAVE_GTK}" != "yes"; then
+  X_SURVIVES_DISCONNECT=yes
+fi
+
 AS_ECHO(["  Does Emacs use -lXaw3d?                                 ${HAVE_XAW3D}
   Is Emacs being built for Android?                       ${ANDROID} ${android_shared_user}
   Does Emacs use the X Double Buffer Extension?           ${HAVE_XDBE}
@@ -7510,6 +7534,7 @@ AS_ECHO(["  Does Emacs use -lXaw3d?                                 ${HAVE_XAW3D
   Does Emacs have native lisp compiler?                   ${HAVE_NATIVE_COMP}
   Does Emacs use version 2 of the X Input Extension?      ${HAVE_XINPUT2}
   Does Emacs generate a smaller-size Japanese dictionary? ${with_small_ja_dic}
+  Does Emacs survive X disconnects?                       ${X_SURVIVES_DISCONNECT}
 "])
 
 if test -n "${EMACSDATA}"; then

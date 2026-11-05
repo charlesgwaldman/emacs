@@ -316,7 +316,8 @@ xg_display_close (GdkDisplay *gdpy)
 
       /* Find another display.  */
       for (dpyinfo = x_display_list; dpyinfo; dpyinfo = dpyinfo->next)
-        if (dpyinfo->display != dpy)
+        /* Reject a display which has been marked dead (zeroed).  */
+        if (dpyinfo->display && dpyinfo->display != dpy)
           {
 	    gdpy_new = gdk_x11_lookup_xdisplay (dpyinfo->display);
 	    gdk_display_manager_set_default_display (gdk_display_manager_get (),
